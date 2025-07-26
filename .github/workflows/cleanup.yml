@@ -1,0 +1,282 @@
+name: 🧹 Cleanup AWS Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to cleanup'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+      confirm_cleanup:
+        description: 'Type "DELETE" to confirm cleanup'
+        required: true
+        type: string
+      cleanup_type:
+        description: 'Type of cleanup'
+        required: true
+        default: 'partial'
+        type: choice
+        options:
+        - partial
+        - full
+  schedule:
+    # Автоматическая очистка dev окружения каждую пятницу в 18:00 UTC
+    - cron: '0 18 * * 5'
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  validate-cleanup:
+    name: ✅ Validate Cleanup Request
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.validate.outputs.proceed }}
+      cleanup_type: ${{ steps.validate.outputs.cleanup_type }}
+    steps:
+      - name: 🔍 Validate inputs
+        id: validate
+        run: |
+          # Проверяем ручной запуск
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.confirm_cleanup }}" != "DELETE" ]; then
+              echo "❌ Cleanup not confirmed. You must type 'DELETE' to proceed."
+              echo "proceed=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+            CLEANUP_TYPE="${{ github.event.inputs.cleanup_type }}"
+          else
+            # Автоматический запуск по расписанию - только dev окружение
+            ENVIRONMENT="dev"
+            CLEANUP_TYPE="partial"
+            echo "🕐 Scheduled cleanup for dev environment"
+          fi
+          
+          # Запрещаем полную очистку prod окружения
+          if [ "$ENVIRONMENT" = "prod" ] && [ "$CLEANUP_TYPE" = "full" ]; then
+            echo "❌ Full cleanup of production environment is not allowed!"
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "✅ Cleanup request validated"
+          echo "Environment: $ENVIRONMENT"
+          echo "Cleanup type: $CLEANUP_TYPE"
+          echo "proceed=true" >> $GITHUB_OUTPUT
+          echo "cleanup_type=$CLEANUP_TYPE" >> $GITHUB_OUTPUT
+
+  cleanup-lambda:
+    name: 🗑️ Cleanup Lambda Resources
+    runs-on: ubuntu-latest
+    needs: validate-cleanup
+    if: needs.validate-cleanup.outputs.proceed == 'true'
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🗑️ Cleanup Lambda versions
+        run: |
+          FUNCTION_NAME="instagram-ocr-${{ github.event.inputs.environment || 'dev' }}-processor"
+          
+          echo "Cleaning up old Lambda versions for $FUNCTION_NAME"
+          
+          # Получаем список всех версий (кроме $LATEST)
+          VERSIONS=$(aws lambda list-versions-by-function \
+            --function-name $FUNCTION_NAME \
+            --query 'Versions[?Version!=`$LATEST`].Version' \
+            --output text)
+          
+          # Оставляем только последние 3 версии
+          VERSION_COUNT=$(echo $VERSIONS | wc -w)
+          if [ $VERSION_COUNT -gt 3 ]; then
+            OLD_VERSIONS=$(echo $VERSIONS | tr ' ' '\n' | head -n -3)
+            for version in $OLD_VERSIONS; do
+              echo "Deleting Lambda version: $version"
+              aws lambda delete-function \
+                --function-name $FUNCTION_NAME:$version || true
+            done
+          fi
+
+      - name: 🗑️ Cleanup CloudWatch logs
+        if: needs.validate-cleanup.outputs.cleanup_type == 'full'
+        run: |
+          LOG_GROUP="/aws/lambda/instagram-ocr-${{ github.event.inputs.environment || 'dev' }}-processor"
+          
+          echo "Cleaning up CloudWatch logs for $LOG_GROUP"
+          
+          # Удаляем старые log streams (старше 7 дней)
+          CUTOFF_DATE=$(date -d '7 days ago' +%s)000
+          
+          aws logs describe-log-streams \
+            --log-group-name $LOG_GROUP \
+            --query "logStreams[?creationTime<\`$CUTOFF_DATE\`].logStreamName" \
+            --output text | while read stream; do
+              if [ ! -z "$stream" ]; then
+                echo "Deleting log stream: $stream"
+                aws logs delete-log-stream \
+                  --log-group-name $LOG_GROUP \
+                  --log-stream-name $stream || true
+              fi
+            done
+
+  cleanup-s3:
+    name: 🗑️ Cleanup S3 Resources
+    runs-on: ubuntu-latest
+    needs: validate-cleanup
+    if: needs.validate-cleanup.outputs.proceed == 'true'
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🗑️ Cleanup S3 upload bucket
+        run: |
+          UPLOAD_BUCKET="instagram-ocr-${{ github.event.inputs.environment || 'dev' }}-upload"
+          
+          echo "Cleaning up S3 upload bucket: $UPLOAD_BUCKET"
+          
+          # Удаляем файлы старше 7 дней
+          CUTOFF_DATE=$(date -d '7 days ago' --iso-8601=seconds)
+          
+          aws s3api list-objects-v2 \
+            --bucket $UPLOAD_BUCKET \
+            --query "Contents[?LastModified<'$CUTOFF_DATE'].Key" \
+            --output text | while read key; do
+              if [ ! -z "$key" ] && [ "$key" != "None" ]; then
+                echo "Deleting old file: $key"
+                aws s3 rm s3://$UPLOAD_BUCKET/$key || true
+              fi
+            done
+
+      - name: 🗑️ Cleanup S3 incomplete uploads
+        run: |
+          UPLOAD_BUCKET="instagram-ocr-${{ github.event.inputs.environment || 'dev' }}-upload"
+          
+          echo "Cleaning up incomplete multipart uploads"
+          
+          aws s3api list-multipart-uploads \
+            --bucket $UPLOAD_BUCKET \
+            --query 'Uploads[].{Key:Key,UploadId:UploadId}' \
+            --output text | while read key upload_id; do
+              if [ ! -z "$key" ] && [ "$key" != "None" ]; then
+                echo "Aborting incomplete upload: $key ($upload_id)"
+                aws s3api abort-multipart-upload \
+                  --bucket $UPLOAD_BUCKET \
+                  --key $key \
+                  --upload-id $upload_id || true
+              fi
+            done
+
+  cleanup-dynamodb:
+    name: 🗑️ Cleanup DynamoDB Resources
+    runs-on: ubuntu-latest
+    needs: validate-cleanup
+    if: needs.validate-cleanup.outputs.proceed == 'true' && needs.validate-cleanup.outputs.cleanup_type == 'full'
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🗑️ Cleanup old DynamoDB data
+        run: |
+          ANSWERS_TABLE="instagram-answers-${{ github.event.inputs.environment || 'dev' }}"
+          STATISTICS_TABLE="instagram-statistics-${{ github.event.inputs.environment || 'dev' }}"
+          
+          echo "Cleaning up old DynamoDB data (older than 30 days)"
+          
+          # Получаем дату отсечения (30 дней назад)
+          CUTOFF_DATE=$(date -d '30 days ago' --iso-8601=date)
+          
+          echo "Cutoff date: $CUTOFF_DATE"
+          echo "⚠️ DynamoDB cleanup would require custom logic to scan and delete old items"
+          echo "This is a placeholder for actual cleanup implementation"
+
+  cleanup-cloudfront:
+    name: 🗑️ Cleanup CloudFront Resources
+    runs-on: ubuntu-latest
+    needs: validate-cleanup
+    if: needs.validate-cleanup.outputs.proceed == 'true'
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🔄 Invalidate CloudFront cache
+        run: |
+          echo "Invalidating CloudFront cache to ensure fresh content"
+          
+          DISTRIBUTION_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Comment=='Instagram OCR Frontend'].Id" \
+            --output text)
+          
+          if [ ! -z "$DISTRIBUTION_ID" ] && [ "$DISTRIBUTION_ID" != "None" ]; then
+            aws cloudfront create-invalidation \
+              --distribution-id $DISTRIBUTION_ID \
+              --paths "/*"
+            echo "✅ CloudFront cache invalidated"
+          else
+            echo "⚠️ CloudFront distribution not found"
+          fi
+
+  cleanup-summary:
+    name: 📊 Cleanup Summary
+    runs-on: ubuntu-latest
+    needs: [cleanup-lambda, cleanup-s3, cleanup-dynamodb, cleanup-cloudfront]
+    if: always() && needs.validate-cleanup.outputs.proceed == 'true'
+    steps:
+      - name: 📊 Generate cleanup report
+        run: |
+          echo "🧹 CLEANUP SUMMARY"
+          echo "=================="
+          echo "Environment: ${{ github.event.inputs.environment || 'dev' }}"
+          echo "Cleanup type: ${{ needs.validate-cleanup.outputs.cleanup_type }}"
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "Initiated by: ${{ github.actor }}"
+          echo ""
+          echo "Component Status:"
+          echo "- Lambda cleanup: ${{ needs.cleanup-lambda.result }}"
+          echo "- S3 cleanup: ${{ needs.cleanup-s3.result }}"
+          echo "- DynamoDB cleanup: ${{ needs.cleanup-dynamodb.result }}"
+          echo "- CloudFront cleanup: ${{ needs.cleanup-cloudfront.result }}"
+          echo ""
+          
+          SUCCESS_COUNT=0
+          TOTAL_COUNT=4
+          
+          [ "${{ needs.cleanup-lambda.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.cleanup-s3.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.cleanup-cloudfront.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          
+          # DynamoDB cleanup только при full cleanup
+          if [ "${{ needs.validate-cleanup.outputs.cleanup_type }}" = "full" ]; then
+            [ "${{ needs.cleanup-dynamodb.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          else
+            TOTAL_COUNT=3
+          fi
+          
+          if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
+            echo "✅ Cleanup completed successfully!"
+            echo "💰 AWS resources have been optimized"
+          else
+            echo "⚠️ Cleanup completed with some issues"
+            echo "🔍 Please review the logs for details"
+          fi 

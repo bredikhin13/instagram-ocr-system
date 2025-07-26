@@ -1,0 +1,312 @@
+name: 🚀 Deploy Instagram OCR System to AWS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: 1.6.0
+  NODE_VERSION: 18
+
+jobs:
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install dependencies
+        run: |
+          npm ci
+          cd lambda && npm ci
+          cd ../frontend && npm ci
+
+      - name: 🧪 Run Lambda tests
+        run: npm run test:lambda
+
+      - name: 🧪 Run Frontend tests
+        run: npm run test:frontend
+
+      - name: 📊 Integration tests
+        run: npm test
+
+  build:
+    name: 🏗️ Build Applications
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      lambda-artifact: ${{ steps.lambda-build.outputs.artifact }}
+      frontend-artifact: ${{ steps.frontend-build.outputs.artifact }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install dependencies
+        run: |
+          npm ci
+          cd lambda && npm ci
+          cd ../frontend && npm ci
+
+      - name: 🔨 Build Lambda function
+        id: lambda-build
+        run: |
+          cd lambda
+          npm run build
+          npm run package
+          echo "artifact=lambda.zip" >> $GITHUB_OUTPUT
+
+      - name: 🎨 Build Frontend
+        id: frontend-build
+        run: |
+          cd frontend
+          npm run build
+          echo "artifact=dist" >> $GITHUB_OUTPUT
+
+      - name: 📦 Upload Lambda artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package
+          path: lambda/lambda.zip
+          retention-days: 7
+
+      - name: 📦 Upload Frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/dist
+          retention-days: 7
+
+  deploy-infrastructure:
+    name: 🏗️ Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    environment: 
+      name: ${{ github.event.inputs.environment || 'prod' }}
+    outputs:
+      s3-bucket: ${{ steps.terraform-output.outputs.s3-bucket }}
+      api-gateway-url: ${{ steps.terraform-output.outputs.api-gateway-url }}
+      cloudfront-domain: ${{ steps.terraform-output.outputs.cloudfront-domain }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: 📝 Create terraform.tfvars
+        run: |
+          cd infrastructure
+          cat > terraform.tfvars << EOF
+          aws_region = "${{ env.AWS_REGION }}"
+          environment = "${{ github.event.inputs.environment || 'prod' }}"
+          project_name = "instagram-ocr"
+          bucket_name = "instagram-ocr-${{ github.event.inputs.environment || 'prod' }}-${{ github.run_number }}"
+          google_vision_api_key = "${{ secrets.GOOGLE_VISION_API_KEY }}"
+          tags = {
+            Environment = "${{ github.event.inputs.environment || 'prod' }}"
+            Project = "Instagram OCR System"
+            ManagedBy = "Terraform"
+            DeployedBy = "GitHub Actions"
+            CommitSha = "${{ github.sha }}"
+          }
+          EOF
+
+      - name: 🔄 Terraform Init
+        run: |
+          cd infrastructure
+          terraform init
+
+      - name: 📋 Terraform Plan
+        run: |
+          cd infrastructure
+          terraform plan -no-color
+
+      - name: 🚀 Terraform Apply
+        run: |
+          cd infrastructure
+          terraform apply -auto-approve -no-color
+
+      - name: 📤 Get Terraform outputs
+        id: terraform-output
+        run: |
+          cd infrastructure
+          echo "s3-bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "api-gateway-url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
+          echo "cloudfront-domain=$(terraform output -raw cloudfront_domain)" >> $GITHUB_OUTPUT
+
+  deploy-lambda:
+    name: 🔧 Deploy Lambda Function
+    runs-on: ubuntu-latest
+    needs: [build, deploy-infrastructure]
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 📥 Download Lambda artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package
+          path: ./
+
+      - name: 🚀 Update Lambda function
+        run: |
+          aws lambda update-function-code \
+            --function-name "instagram-ocr-${{ github.event.inputs.environment || 'prod' }}-processor" \
+            --zip-file fileb://lambda.zip
+
+      - name: ⚙️ Update Lambda environment variables
+        run: |
+          aws lambda update-function-configuration \
+            --function-name "instagram-ocr-${{ github.event.inputs.environment || 'prod' }}-processor" \
+            --environment Variables="{
+              GOOGLE_VISION_API_KEY=\"${{ secrets.GOOGLE_VISION_API_KEY }}\",
+              ANSWERS_TABLE=\"instagram-answers-${{ github.event.inputs.environment || 'prod' }}\",
+              STATISTICS_TABLE=\"instagram-statistics-${{ github.event.inputs.environment || 'prod' }}\",
+              AWS_REGION=\"${{ env.AWS_REGION }}\"
+            }"
+
+  deploy-frontend:
+    name: 🎨 Deploy Frontend
+    runs-on: ubuntu-latest
+    needs: [build, deploy-infrastructure]
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 📥 Download Frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: ./dist
+
+      - name: 📝 Create environment config
+        run: |
+          cat > ./dist/.env.production << EOF
+          VITE_API_BASE_URL=${{ needs.deploy-infrastructure.outputs.api-gateway-url }}
+          VITE_APP_NAME="Instagram OCR System"
+          VITE_APP_VERSION="${{ github.sha }}"
+          VITE_ENVIRONMENT="${{ github.event.inputs.environment || 'prod' }}"
+          EOF
+
+      - name: 🚀 Deploy to S3
+        run: |
+          aws s3 sync ./dist s3://${{ needs.deploy-infrastructure.outputs.s3-bucket }}-frontend \
+            --delete \
+            --cache-control "public, max-age=31536000" \
+            --exclude "*.html" \
+            --exclude ".env.production"
+          
+          # HTML файлы с коротким кешем
+          aws s3 sync ./dist s3://${{ needs.deploy-infrastructure.outputs.s3-bucket }}-frontend \
+            --delete \
+            --cache-control "public, max-age=0, must-revalidate" \
+            --include "*.html"
+
+      - name: 🔄 Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id $(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?Comment=='Instagram OCR Frontend'].Id" \
+              --output text) \
+            --paths "/*"
+
+  post-deploy:
+    name: 🧪 Post-Deployment Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-lambda, deploy-frontend, deploy-infrastructure]
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🏥 Health Check API
+        run: |
+          API_URL="${{ needs.deploy-infrastructure.outputs.api-gateway-url }}"
+          echo "Testing API health at: $API_URL/health"
+          
+          for i in {1..5}; do
+            if curl -f "$API_URL/health"; then
+              echo "✅ API health check passed"
+              break
+            else
+              echo "❌ API health check failed, attempt $i/5"
+              sleep 10
+            fi
+          done
+
+      - name: 🌐 Frontend Health Check
+        run: |
+          FRONTEND_URL="https://${{ needs.deploy-infrastructure.outputs.cloudfront-domain }}"
+          echo "Testing frontend at: $FRONTEND_URL"
+          
+          for i in {1..5}; do
+            if curl -f "$FRONTEND_URL"; then
+              echo "✅ Frontend health check passed"
+              break
+            else
+              echo "❌ Frontend health check failed, attempt $i/5"
+              sleep 15
+            fi
+          done
+
+      - name: 📊 Deployment Summary
+        run: |
+          echo "🎉 Deployment completed successfully!"
+          echo ""
+          echo "📋 Deployment Details:"
+          echo "Environment: ${{ github.event.inputs.environment || 'prod' }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "API Gateway: ${{ needs.deploy-infrastructure.outputs.api-gateway-url }}"
+          echo "Frontend URL: https://${{ needs.deploy-infrastructure.outputs.cloudfront-domain }}"
+          echo "S3 Bucket: ${{ needs.deploy-infrastructure.outputs.s3-bucket }}"
+          echo ""
+          echo "🚀 System is ready for use!" 

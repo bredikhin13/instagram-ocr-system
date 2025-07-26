@@ -1,0 +1,297 @@
+name: 🔄 Rollback Instagram OCR System
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+      rollback_commit:
+        description: 'Commit SHA to rollback to'
+        required: true
+        type: string
+      confirm_rollback:
+        description: 'Type "CONFIRM" to proceed with rollback'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  validate-rollback:
+    name: ✅ Validate Rollback Request
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.validate.outputs.proceed }}
+    steps:
+      - name: 🔍 Validate inputs
+        id: validate
+        run: |
+          if [ "${{ github.event.inputs.confirm_rollback }}" != "CONFIRM" ]; then
+            echo "❌ Rollback not confirmed. You must type 'CONFIRM' to proceed."
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          if [ -z "${{ github.event.inputs.rollback_commit }}" ]; then
+            echo "❌ Rollback commit SHA is required."
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "✅ Rollback request validated"
+          echo "proceed=true" >> $GITHUB_OUTPUT
+
+      - name: 📋 Rollback Summary
+        if: steps.validate.outputs.proceed == 'true'
+        run: |
+          echo "🔄 ROLLBACK INITIATED"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Rolling back to commit: ${{ github.event.inputs.rollback_commit }}"
+          echo "Initiated by: ${{ github.actor }}"
+
+  rollback-lambda:
+    name: 🔧 Rollback Lambda Function
+    runs-on: ubuntu-latest
+    needs: validate-rollback
+    if: needs.validate-rollback.outputs.proceed == 'true'
+    environment: 
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - name: 📥 Checkout rollback commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.rollback_commit }}
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 📦 Install Lambda dependencies
+        run: |
+          cd lambda
+          npm ci
+
+      - name: 🔨 Build Lambda function
+        run: |
+          cd lambda
+          npm run build
+          npm run package
+
+      - name: 🔄 Deploy rollback Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name "instagram-ocr-${{ github.event.inputs.environment }}-processor" \
+            --zip-file fileb://lambda/lambda.zip
+
+      - name: ⏳ Wait for Lambda update
+        run: |
+          aws lambda wait function-updated \
+            --function-name "instagram-ocr-${{ github.event.inputs.environment }}-processor"
+
+      - name: 🧪 Test Lambda function
+        run: |
+          aws lambda invoke \
+            --function-name "instagram-ocr-${{ github.event.inputs.environment }}-processor" \
+            --payload '{"test": true}' \
+            --cli-binary-format raw-in-base64-out \
+            response.json
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Lambda rollback successful"
+          else
+            echo "❌ Lambda rollback failed"
+            exit 1
+          fi
+
+  rollback-frontend:
+    name: 🎨 Rollback Frontend
+    runs-on: ubuntu-latest
+    needs: validate-rollback
+    if: needs.validate-rollback.outputs.proceed == 'true'
+    environment: 
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - name: 📥 Checkout rollback commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.rollback_commit }}
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 📦 Install Frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: 🎨 Build Frontend
+        run: |
+          cd frontend
+          npm run build
+
+      - name: 📤 Get infrastructure outputs
+        id: infra
+        run: |
+          # Получаем название S3 bucket из тегов или переменных
+          BUCKET_NAME="instagram-ocr-${{ github.event.inputs.environment }}-frontend"
+          echo "bucket-name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+
+      - name: 🔄 Deploy rollback Frontend
+        run: |
+          aws s3 sync frontend/dist s3://${{ steps.infra.outputs.bucket-name }} \
+            --delete \
+            --cache-control "public, max-age=31536000" \
+            --exclude "*.html"
+          
+          # HTML файлы с коротким кешем
+          aws s3 sync frontend/dist s3://${{ steps.infra.outputs.bucket-name }} \
+            --delete \
+            --cache-control "public, max-age=0, must-revalidate" \
+            --include "*.html"
+
+      - name: 🔄 Invalidate CloudFront cache
+        run: |
+          DISTRIBUTION_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Comment=='Instagram OCR Frontend'].Id" \
+            --output text)
+          
+          if [ ! -z "$DISTRIBUTION_ID" ]; then
+            aws cloudfront create-invalidation \
+              --distribution-id $DISTRIBUTION_ID \
+              --paths "/*"
+            echo "✅ CloudFront cache invalidated"
+          else
+            echo "⚠️ CloudFront distribution not found"
+          fi
+
+  post-rollback-tests:
+    name: 🧪 Post-Rollback Tests
+    runs-on: ubuntu-latest
+    needs: [rollback-lambda, rollback-frontend]
+    if: always() && needs.validate-rollback.outputs.proceed == 'true'
+    steps:
+      - name: ⚙️ Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🏥 Health Check API
+        run: |
+          # Получаем API Gateway URL из Lambda environment variables или tags
+          API_URL=$(aws lambda get-function-configuration \
+            --function-name "instagram-ocr-${{ github.event.inputs.environment }}-processor" \
+            --query 'Environment.Variables.API_GATEWAY_URL' \
+            --output text)
+          
+          if [ "$API_URL" = "None" ] || [ -z "$API_URL" ]; then
+            echo "⚠️ API Gateway URL not found in Lambda environment"
+            API_URL="https://api-${{ github.event.inputs.environment }}.example.com"
+          fi
+          
+          echo "Testing API health at: $API_URL/health"
+          
+          for i in {1..5}; do
+            if curl -f "$API_URL/health" 2>/dev/null; then
+              echo "✅ API health check passed"
+              break
+            else
+              echo "❌ API health check failed, attempt $i/5"
+              sleep 10
+            fi
+          done
+
+      - name: 🌐 Frontend Health Check
+        run: |
+          # Получаем CloudFront domain
+          DISTRIBUTION_DOMAIN=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Comment=='Instagram OCR Frontend'].DomainName" \
+            --output text)
+          
+          if [ ! -z "$DISTRIBUTION_DOMAIN" ]; then
+            FRONTEND_URL="https://$DISTRIBUTION_DOMAIN"
+            echo "Testing frontend at: $FRONTEND_URL"
+            
+            for i in {1..5}; do
+              if curl -f "$FRONTEND_URL" 2>/dev/null; then
+                echo "✅ Frontend health check passed"
+                break
+              else
+                echo "❌ Frontend health check failed, attempt $i/5"
+                sleep 15
+              fi
+            done
+          else
+            echo "⚠️ CloudFront distribution not found"
+          fi
+
+  rollback-notification:
+    name: 📢 Rollback Notification
+    runs-on: ubuntu-latest
+    needs: [rollback-lambda, rollback-frontend, post-rollback-tests]
+    if: always() && needs.validate-rollback.outputs.proceed == 'true'
+    steps:
+      - name: 📊 Determine rollback status
+        id: status
+        run: |
+          LAMBDA_STATUS="${{ needs.rollback-lambda.result }}"
+          FRONTEND_STATUS="${{ needs.rollback-frontend.result }}"
+          TESTS_STATUS="${{ needs.post-rollback-tests.result }}"
+          
+          if [ "$LAMBDA_STATUS" = "success" ] && [ "$FRONTEND_STATUS" = "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=Rollback completed successfully" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=Rollback failed or partially completed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📢 Create rollback summary
+        run: |
+          echo "🔄 ROLLBACK SUMMARY"
+          echo "=================="
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Rollback commit: ${{ github.event.inputs.rollback_commit }}"
+          echo "Initiated by: ${{ github.actor }}"
+          echo "Status: ${{ steps.status.outputs.status }}"
+          echo ""
+          echo "Component Status:"
+          echo "- Lambda: ${{ needs.rollback-lambda.result }}"
+          echo "- Frontend: ${{ needs.rollback-frontend.result }}"
+          echo "- Health Checks: ${{ needs.post-rollback-tests.result }}"
+          echo ""
+          if [ "${{ steps.status.outputs.status }}" = "success" ]; then
+            echo "✅ Rollback completed successfully!"
+            echo "🚀 System has been restored to commit ${{ github.event.inputs.rollback_commit }}"
+          else
+            echo "❌ Rollback encountered issues!"
+            echo "🔍 Please check the deployment logs and consider manual intervention"
+          fi 
