@@ -1,0 +1,37 @@
+{
+  "name": "instagram-ocr-system",
+  "version": "1.0.0",
+  "description": "End-to-end система OCR-анализа Instagram Stories с использованием AWS",
+  "main": "index.js",
+  "workspaces": [
+    "lambda",
+    "frontend"
+  ],
+  "scripts": {
+    "install:all": "npm install && npm install --workspace=lambda && npm install --workspace=frontend",
+    "build:lambda": "npm run build --workspace=lambda",
+    "build:frontend": "npm run build --workspace=frontend",
+    "build:all": "npm run build:lambda && npm run build:frontend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "test": "node test-all.js",
+    "test:lambda": "cd lambda && node tests/simple.test.js",
+    "test:frontend": "cd frontend && node src/test/simple-frontend.test.js",
+    "terraform:init": "cd infrastructure && terraform init",
+    "terraform:plan": "cd infrastructure && terraform plan",
+    "terraform:apply": "cd infrastructure && terraform apply"
+  },
+  "keywords": [
+    "instagram",
+    "ocr",
+    "aws",
+    "lambda",
+    "typescript",
+    "react"
+  ],
+  "author": "Developer",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  }
+} 

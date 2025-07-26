@@ -1,0 +1,32 @@
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "dev"
+
+# Project Configuration
+project_name = "instagram-ocr"
+
+# S3 Configuration
+bucket_name = "instagram-ocr-uploads-dev"
+
+# DynamoDB Configuration
+answers_table_name    = "instagram-ocr-answers-dev"
+statistics_table_name = "instagram-ocr-statistics-dev"
+
+# Lambda Configuration
+lambda_zip_path = "../lambda/lambda.zip"
+
+# Google Vision API Configuration
+# Получите ключ API на https://console.cloud.google.com/
+google_vision_api_key = "your-google-vision-api-key-here"
+
+# Optional: Custom Domain Configuration
+# domain_name           = "ocr.example.com"
+# acm_certificate_arn   = "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012"
+
+# Additional Tags
+tags = {
+  Owner       = "Development Team"
+  Project     = "Instagram OCR System"
+  Environment = "dev"
+  CostCenter  = "engineering"
+} 
