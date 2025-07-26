@@ -36,9 +36,9 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
-          npm ci
-          cd lambda && npm ci
-          cd ../frontend && npm ci
+          npm install
+          cd lambda && npm install
+          cd ../frontend && npm install
 
       - name: 🧪 Run Lambda tests
         run: npm run test:lambda
@@ -68,9 +68,9 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
-          npm ci
-          cd lambda && npm ci
-          cd ../frontend && npm ci
+          npm install
+          cd lambda && npm install
+          cd ../frontend && npm install
 
       - name: 🔨 Build Lambda function
         id: lambda-build

@@ -86,7 +86,7 @@ jobs:
       - name: 📦 Install Lambda dependencies
         run: |
           cd lambda
-          npm ci
+          npm install
 
       - name: 🔨 Build Lambda function
         run: |
@@ -149,7 +149,7 @@ jobs:
       - name: 📦 Install Frontend dependencies
         run: |
           cd frontend
-          npm ci
+          npm install
 
       - name: 🎨 Build Frontend
         run: |

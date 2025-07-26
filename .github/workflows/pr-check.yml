@@ -24,9 +24,9 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
-          npm ci
-          cd lambda && npm ci || echo "Lambda deps install failed"
-          cd ../frontend && npm ci || echo "Frontend deps install failed"
+          npm install
+          cd lambda && npm install || echo "Lambda deps install failed"
+          cd ../frontend && npm install || echo "Frontend deps install failed"
 
       - name: 🧹 Lint Lambda code
         run: |
@@ -58,9 +58,9 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
-          npm ci
-          cd lambda && npm ci || echo "Lambda deps install failed"
-          cd ../frontend && npm ci || echo "Frontend deps install failed"
+          npm install
+          cd lambda && npm install || echo "Lambda deps install failed"
+          cd ../frontend && npm install || echo "Frontend deps install failed"
 
       - name: 🔨 Test Lambda build
         run: |
