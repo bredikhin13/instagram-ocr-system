@@ -1,4 +1,4 @@
-import { S3Event, Context, S3Handler } from 'aws-lambda';
+import { S3Event, Context, Handler } from 'aws-lambda';
 import { S3Reader } from './modules/s3Reader';
 import { OCRService } from './modules/ocr';
 import { AnswerParser } from './modules/parser';
@@ -8,7 +8,7 @@ import { StatisticsCalculator } from './modules/statistics';
 /**
  * Основная Lambda-функция для обработки OCR Instagram Stories
  */
-export const handler: S3Handler = async (event: S3Event, context: Context) => {
+export const handler: Handler = async (event: S3Event, context: Context) => {
   console.log('Lambda function started', JSON.stringify(event, null, 2));
   
   // Инициализируем сервисы

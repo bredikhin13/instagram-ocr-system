@@ -53,7 +53,7 @@ export class OCRService {
           }));
           
           // Добавляем confidence если доступен
-          if (detection.confidence !== undefined) {
+          if (detection.confidence !== undefined && detection.confidence !== null) {
             totalConfidence += detection.confidence;
             confidenceCount++;
           }
