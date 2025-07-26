@@ -211,7 +211,7 @@ const StatisticsView = () => {
                 <XAxis dataKey="name" />
                 <YAxis />
                 <Tooltip 
-                  formatter={(value, name) => [value, 'Количество']}
+                  formatter={(value, _name) => [value, 'Количество']}
                   labelFormatter={(label) => `Ответ: ${label}`}
                 />
                 <Bar dataKey="value" fill="#3B82F6" />

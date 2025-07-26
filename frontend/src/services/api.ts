@@ -1,7 +1,6 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import { 
   StoryData, 
-  StatisticsRecord, 
   AnswerRecord, 
   APIResponse, 
   StoryListResponse,
@@ -13,8 +12,12 @@ class APIService {
   private api: AxiosInstance;
 
   constructor() {
+    const baseURL = typeof window !== 'undefined' && (window as any).import?.meta?.env?.VITE_API_BASE_URL 
+      || process.env.VITE_API_BASE_URL 
+      || 'https://your-api-gateway-url.amazonaws.com/prod';
+      
     this.api = axios.create({
-      baseURL: import.meta.env.VITE_API_BASE_URL || 'https://your-api-gateway-url.amazonaws.com/prod',
+      baseURL,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
@@ -176,7 +179,7 @@ class APIService {
    */
   async healthCheck(): Promise<{ status: string; timestamp: string }> {
     try {
-      const response = await this.api.get<APIResponse<any>>('/health');
+      await this.api.get<APIResponse<any>>('/health');
       
       return {
         status: 'healthy',
