@@ -102,7 +102,7 @@ coverage/
 
 # Google Cloud credentials
 google-vision-key.json
-*.json
+service-account-key.json
 
 # AWS CLI
 .aws/
