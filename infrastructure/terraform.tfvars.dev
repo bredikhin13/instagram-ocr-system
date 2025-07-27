@@ -1,0 +1,46 @@
+# ==========================================================
+# Instagram OCR System - DEV Environment Configuration
+# ==========================================================
+
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "dev"
+
+# Project Configuration
+project_name = "instagram-ocr"
+
+# S3 Configuration
+# Dev bucket с меньшими ограничениями
+bucket_name = "instagram-ocr-uploads-dev-2025"
+
+# DynamoDB Configuration
+answers_table_name    = "instagram-ocr-answers-dev"
+statistics_table_name = "instagram-ocr-statistics-dev"
+
+# Lambda Configuration
+lambda_zip_path = "../lambda/lambda.zip"
+
+# Google Vision API Configuration
+# ⚠️ ОБЯЗАТЕЛЬНО: Замените на ваш реальный Google Vision API ключ
+google_vision_api_key = "REPLACE_WITH_YOUR_GOOGLE_VISION_API_KEY"
+
+# Dev Environment Tags
+tags = {
+  Project     = "Instagram OCR System"
+  Environment = "dev"
+  Owner       = "Developer"
+  Repository  = "instagram-ocr-system"
+  ManagedBy   = "Terraform"
+  Purpose     = "Testing"
+  AutoDelete  = "yes"
+}
+
+# ==========================================================
+# Dev Environment - для тестирования и разработки
+# ==========================================================
+# Используйте этот файл для первоначального тестирования:
+# 1. cp terraform.tfvars.dev terraform.tfvars
+# 2. Отредактируйте google_vision_api_key
+# 3. terraform plan
+# 4. terraform apply
+# ========================================================== 
