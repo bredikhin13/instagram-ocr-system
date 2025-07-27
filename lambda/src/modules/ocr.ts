@@ -6,11 +6,34 @@ export class OCRService {
 
   constructor() {
     // Инициализация Google Vision клиента
-    // Ключ API может быть передан через переменную окружения или service account
-    this.visionClient = new ImageAnnotatorClient({
-      keyFilename: process.env.GOOGLE_VISION_KEY_FILE,
-      projectId: process.env.GOOGLE_CLOUD_PROJECT_ID
-    });
+    // Поддерживает JSON credentials из переменной окружения или файл
+    this.visionClient = this.createVisionClient();
+  }
+
+  private createVisionClient(): ImageAnnotatorClient {
+    const apiKey = process.env.GOOGLE_VISION_API_KEY;
+    
+    if (!apiKey) {
+      throw new Error('GOOGLE_VISION_API_KEY environment variable is required');
+    }
+
+    try {
+      // Пытаемся парсить как JSON (Service Account)
+      const credentials = JSON.parse(apiKey);
+      
+      console.log('Using Google Vision with Service Account credentials');
+      return new ImageAnnotatorClient({
+        credentials,
+        projectId: credentials.project_id
+      });
+      
+    } catch (parseError) {
+      // Если не JSON, используем как API Key
+      console.log('Using Google Vision with API Key');
+      return new ImageAnnotatorClient({
+        apiKey: apiKey.trim()
+      });
+    }
   }
 
   /**

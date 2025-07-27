@@ -131,12 +131,16 @@ jobs:
       - name: 📝 Create terraform.tfvars
         run: |
           cd infrastructure
+          
+          # Escape Google Vision API key для Terraform
+          GOOGLE_KEY_ESCAPED=$(echo '${{ secrets.GOOGLE_VISION_API_KEY }}' | sed 's/"/\\"/g')
+          
           cat > terraform.tfvars << EOF
           aws_region = "${{ env.AWS_REGION }}"
           environment = "${{ github.event.inputs.environment || 'prod' }}"
           project_name = "instagram-ocr"
           bucket_name = "instagram-ocr-${{ github.event.inputs.environment || 'prod' }}-${{ github.run_number }}"
-          google_vision_api_key = "${{ secrets.GOOGLE_VISION_API_KEY }}"
+          google_vision_api_key = "$GOOGLE_KEY_ESCAPED"
           tags = {
             Environment = "${{ github.event.inputs.environment || 'prod' }}"
             Project = "Instagram OCR System"
@@ -195,13 +199,16 @@ jobs:
 
       - name: ⚙️ Update Lambda environment variables
         run: |
+          # Безопасно передаем JSON через отдельную переменную
+          GOOGLE_API_KEY='${{ secrets.GOOGLE_VISION_API_KEY }}'
+          
           aws lambda update-function-configuration \
             --function-name "instagram-ocr-${{ github.event.inputs.environment || 'prod' }}-processor" \
             --environment Variables="{
-              GOOGLE_VISION_API_KEY=\"${{ secrets.GOOGLE_VISION_API_KEY }}\",
-              ANSWERS_TABLE=\"instagram-answers-${{ github.event.inputs.environment || 'prod' }}\",
-              STATISTICS_TABLE=\"instagram-statistics-${{ github.event.inputs.environment || 'prod' }}\",
-              AWS_REGION=\"${{ env.AWS_REGION }}\"
+              \"GOOGLE_VISION_API_KEY\":\"$GOOGLE_API_KEY\",
+              \"ANSWERS_TABLE\":\"instagram-answers-${{ github.event.inputs.environment || 'prod' }}\",
+              \"STATISTICS_TABLE\":\"instagram-statistics-${{ github.event.inputs.environment || 'prod' }}\",
+              \"AWS_REGION\":\"${{ env.AWS_REGION }}\"
             }"
 
   deploy-frontend:

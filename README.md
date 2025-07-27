@@ -80,10 +80,42 @@ npm install --workspace=frontend # React фронтенд
 
 ### 2. Настройка Google Vision API
 
+#### 🔑 JSON Service Account (рекомендуется)
+
 1. Создайте проект в [Google Cloud Console](https://console.cloud.google.com/)
-2. Включите Vision API
-3. Создайте Service Account и скачайте JSON ключ
-4. Сохраните ключ как переменную окружения или файл
+2. Включите Vision API (APIs & Services → Library → Cloud Vision API)
+3. Создайте Service Account (IAM & Admin → Service Accounts)
+4. Скачайте JSON ключ и сохраните содержимое в GitHub Secrets
+
+**GitHub Secrets:**
+```
+Name: GOOGLE_VISION_API_KEY
+Value: {"type":"service_account","project_id":"your-project",...}
+```
+
+**Локальная разработка:**
+```bash
+export GOOGLE_VISION_API_KEY='{"type":"service_account","project_id":"your-project",...}'
+```
+
+#### 🔧 Альтернатива: API Key
+
+```bash
+# GitHub Secrets
+GOOGLE_VISION_API_KEY=AIzaSyDaGmWKa4JsXZ-HjGw1HvSsa2TuHieyBqU
+
+# Локально
+export GOOGLE_VISION_API_KEY=AIzaSyDaGmWKa4JsXZ-HjGw1HvSsa2TuHieyBqU
+```
+
+#### 🧪 Тестирование
+
+```bash
+cd lambda
+node tests/ocr-test-example.js
+```
+
+📋 **Подробные инструкции:** `infrastructure/GOOGLE_VISION_SETUP.md`
 
 ### 3. Настройка Terraform
 
